@@ -1,0 +1,186 @@
+# Blosxom Plugin: mongohitcounter -*- perl -*-
+# Author: Steve Schwarz <http://agilitynerd.com/>
+# 2010-MAY-05   0.1 Initial version
+# Based on categories plugin by Todd Larason (jtl@molehill.org)
+# and descendent from hitcounter
+
+package mongohitcounter;
+
+# Counts are stored keyed on full path without the flavour
+# so story/ideas/money_maker.html and story/ideas/money_maker.index
+# both increment the same counter.
+
+# -- Configuration --
+#
+# Name of file holding hash of paths and their current count and title.
+# This file will only exist if the hitcounter plugin is in use.
+# It is only used to initially populate the mongo database.
+# Set this to "" once the data has been loaded into Mongo.
+my $file_name = ""; #"$blosxom::plugin_state_dir/hit_stats";
+
+# configuration for Mongo database
+my $host = '127.0.0.1';
+my $port = 27017;
+my $db_name = 'hitcounts';
+my $collection_name = 'websitename';
+
+# Set to a flavour you want to use only for retrieving counts
+# without incrementing the count. Use this flavour to view the
+# counts for URLs of interest.
+my $retrieve_only_flavour = 'hd';
+
+# Add filters here to not increment or open the data file
+# for specific urls or flavours
+
+# Ignore all page loads via these agents:
+# If you use a robots.txt file to disallow agents
+# (and they follow the settings in the file) then
+# you need only put the agents  that are allowed by
+# or ignore the robots.txt in  this list:
+@ignore_agents = ('Google', 'msnbot', 'Yahoo! Slurp', 'ia_archiver');
+
+# Ignore all page loads for these flavors (all rss variants, atom and
+# all write/trackback variants):
+@ignore_flavours = ('rss', 'atom', 'back');
+
+# -------------------
+$mongohitcounter::count = 0;	# use $mongohitcounter::count to get the current count
+
+use CGI qw/:standard/;
+use FileHandle;
+use MongoDB;
+use DateTime;
+
+my $connection, $db, $collection;
+
+sub start {
+    # This filter ignores the rss, atom, trackback feed variants I provide
+    foreach my $ignore (@ignore_flavours) {
+	return 0 if ($$blosxom::flavour =~ /$ignore/);
+    }
+    # Now ignore specific (bot) user agents
+    $agent = $ENV{'HTTP_USER_AGENT'};
+    foreach my $ignore (@ignore_agents) {
+	return 0 if ($agent =~ /$ignore/);
+    }
+
+    $connection = MongoDB::Connection->new(host => $host, port => $port);
+    $db = $connection->get_database($db_name);
+    $collection = $db->get_collection($collection_name);
+    # the first time we run we'll copy the data from the local filesystem
+    # to the Mongo collection
+    if ($file_name ne '' and -r $file_name){
+#	print "Initializing MongoDB - host: $host port: $port db: $db_name collection: $collection_name from $file_name\n";
+	eval "require Storable";
+	if ($@) {
+	    print STDERR "hitcounter disabled, Storable package not available";
+	    return 0;
+	}
+	if (!Storable->can('lock_retrieve')) {
+	    print STDERR "hitcounter disabled, Storable::lock_retrieve() not available";
+	    return 0;
+	}
+	my %cache;
+	my $cacheref = \%cache;
+	$cacheref = Storable::lock_retrieve($file_name);
+	my $time = DateTime->now();
+	while ( my ($path, $array) = each(%$cacheref) ) {
+	    if (ref($array) && ref($array) eq "ARRAY"){
+		my $hits = int($array->[0]);
+		my $title = $array->[1];
+		$title =~ s/\s*$//; # trim trailing whitespace (i.e. DOS newline on UNIX)
+		if ($hits gt 10){
+		    # want all paths to start with slash to match old data format
+		    $path = '/' . $path if ($path =~ m|^[^/]|);
+		    # print "$path => $array $hits $title\n";
+		    $collection->insert({url => $path,
+					 hits => $hits,
+					 title => $title,
+			 updated=> $time});
+		}
+	    }
+	}
+	# Create indices used by counter and favorites plugins
+	$collection->ensure_index({'url' => 1}, {unique => true});
+	$collection->ensure_index({'updated' => 1});
+	$collection->ensure_index({'hits' => 1});
+    }
+    return 1;
+}
+
+
+sub head {
+    my($pkg, $path, $body_ref) = @_;
+    eval {
+	$path = '/' if (!$path);	# convert root path to "/"
+        # want all paths to start with slash to match old data format
+	$path = '/' . $path if ($path =~ m|^[^/]|);
+	$path =~ s/(\.$blosxom::flavour)$//;	# strip flavour from end of path
+	my $suffix = $1;
+	# set $count variable for display on page being viewed
+	my $obj = $collection->find_one({url=>$path});
+	if ($obj){
+	    $count = $obj->{'hits'};
+	}
+
+	# Don't increment and store for rejected writeback or read only view
+	return 1 if (defined $writeback::rejected and $writeback::rejected == 1); # my custom version of writeback
+	return 1 if ($blosxom::flavour eq $retrieve_only_flavour);
+
+	# update the db with the new values (insert or update)
+	if ($suffix ne '' and $obj == undef){
+	    # a request that isn't for a directory and isn't yet in db.
+	    my $title = '';
+	    my $path_file = join "", $blosxom::datadir, '/', $path, '.', $blosxom::file_extension;
+	    my $fh = new FileHandle;
+	    if (-f "$path_file" && $fh->open("< $path_file")) {
+		chomp($title = <$fh>);
+		$fh->close;
+	    }
+	    $title =~ s/\s*$//; # trim trailing whitespace (i.e. DOS newline on UNIX)
+	    $collection->insert({'url'=>$path},
+				{
+				    'title' => $title,
+				    'hits' => 1,
+				    'updated' => DateTime->now
+				});
+	} else {
+	    # A non-article (index) for which there is no entry or an existing entry to update
+	    $collection->update({'url' => $path},
+				{
+				    '$inc' => {'hits' => 1},
+				    '$set' => {'updated' => DateTime->now}
+				},
+				{'upsert' => 1});
+	}
+    };
+    return 1;
+}
+1;
+
+__END__
+
+=head1 LICENSE
+
+this Blosxom Plug-in
+Copyright 2010, Steve Schwarz
+
+(This license is the same as Blosxom's)
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
