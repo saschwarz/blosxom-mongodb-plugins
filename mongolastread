@@ -31,7 +31,7 @@ my $link_flavour = "html";
 		  'sogou', 'topicblogs', 'fastsearch' );
 
 # use $mongolastread::links to get the last $num_displayed links
-# The work is done in the head() in you can put $mongolastread::links in your head.flavour file
+# The work is done in the head() so you can put $mongolastread::links in your head.flavour file
 $mongolastread::links = "";
 
 #
@@ -73,7 +73,7 @@ sub head {
 	my $date = $obj->{'updated'};
 	$title =~ s/\s*$//; # trim trailing whitespace (i.e. DOS newline on UNIX)
 	$title =~ s/\"/&quot;/g;
-	push(@array, "<div style=\"padding:2px;\"><a href=\"$blosxom::url/$url\.$link_flavour\">$title</a></div>");
+	push(@array, "<div><a href=\"$blosxom::url/$url\.$link_flavour\">$title</a></div>");
     }
     $mongolastread::links = join("", @array);
     return 1;
