@@ -119,7 +119,7 @@ sub head {
 	my $suffix = $1;
 	# set $count variable for display on page being viewed
 	my $obj = $collection->find_one({url=>$path});
-	if ($obj){
+	if (defined($obj)){
 	    $count = $obj->{'hits'};
 	}
 
@@ -128,21 +128,20 @@ sub head {
 	return 1 if ($blosxom::flavour eq $retrieve_only_flavour);
 
 	# update the db with the new values (insert or update)
-	if ($suffix ne '' and $obj == undef){
+	if ($suffix ne '' and not defined($obj)){
 	    # a request that isn't for a directory and isn't yet in db.
 	    my $title = '';
-	    my $path_file = join "", $blosxom::datadir, '/', $path, '.', $blosxom::file_extension;
+	    my $path_file = join "", $blosxom::datadir, $path, '.', $blosxom::file_extension;
 	    my $fh = new FileHandle;
 	    if (-f "$path_file" && $fh->open("< $path_file")) {
 		chomp($title = <$fh>);
 		$fh->close;
 	    }
 	    $title =~ s/\s*$//; # trim trailing whitespace (i.e. DOS newline on UNIX)
-	    $collection->insert({'url'=>$path},
-				{
-				    'title' => $title,
-				    'hits' => 1,
-				    'updated' => DateTime->now
+	    $collection->insert({'url'=>$path,
+				 'title' => $title,
+				 'hits' => 1,
+				 'updated' => DateTime->now
 				});
 	} else {
 	    # A non-article (index) for which there is no entry or an existing entry to update
